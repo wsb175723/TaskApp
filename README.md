@@ -15,7 +15,7 @@ Aplikacja została zaprojektowana jako jednostronicowa aplikacja internetowa (SP
 - Statystyki zadań
 - Tryb jasny i ciemny (Dark Mode)
 - Powiadomienia typu Toast
-- Eksport i import danych w formacie JSON
+- Eksport danych w formacie JSON
 - Zapisywanie danych w localStorage
 - Responsywny interfejs użytkownika
 
