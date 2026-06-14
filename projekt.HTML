@@ -1,0 +1,1166 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TaskApp — Zarządzanie Zadaniami</title>
+    
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        zincDarkBg:   '#18181b',
+                        zincDarkCard: '#27272a',
+                        zincDarkInput:'#3f3f46',
+                        appLightBg:   '#f4f4f5'
+                    },
+                    borderRadius: { '3xl': '1.5rem' }
+                }
+            }
+        }
+    </script>
+    <style>
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        body { transition: background-color 0.25s ease, color 0.25s ease; }
+
+        @keyframes fadeSlideIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+        .view-enter { animation: fadeSlideIn 0.22s ease forwards; }
+
+        @keyframes toastIn {
+            from { opacity: 0; transform: translateY(20px) scale(0.95); }
+            to   { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        @keyframes toastOut {
+            from { opacity: 1; transform: translateY(0) scale(1); }
+            to   { opacity: 0; transform: translateY(-10px) scale(0.95); }
+        }
+        .toast-in  { animation: toastIn  0.25s ease forwards; }
+        .toast-out { animation: toastOut 0.2s  ease forwards; }
+
+        @keyframes progressFill {
+            from { width: 0%; }
+        }
+        .progress-bar { animation: progressFill 0.6s ease forwards; }
+
+        .task-check {
+            appearance: none; -webkit-appearance: none;
+            width: 20px; height: 20px;
+            border: 2px solid currentColor;
+            border-radius: 6px; cursor: pointer;
+            position: relative; flex-shrink: 0;
+            transition: all 0.15s ease;
+        }
+        .task-check:checked { background: #3f3f46; border-color: #3f3f46; }
+        .dark .task-check:checked { background: #a1a1aa; border-color: #a1a1aa; }
+        .task-check:checked::after {
+            content: '✓';
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            color: white; font-size: 11px; font-weight: bold;
+        }
+        .dark .task-check:checked::after { color: #18181b; }
+
+        .task-card { transition: transform 0.12s ease, box-shadow 0.12s ease; }
+        .task-card:hover { transform: translateY(-1px); }
+        .cat-active { transition: all 0.15s ease; }
+
+        @keyframes modalIn {
+            from { opacity: 0; transform: scale(0.95) translateY(8px); }
+            to   { opacity: 1; transform: scale(1) translateY(0); }
+        }
+        .modal-enter { animation: modalIn 0.2s ease forwards; }
+    </style>
+</head>
+<body class="bg-[#f4f4f5] text-zinc-900 dark:bg-zincDarkBg dark:text-zinc-100 font-sans antialiased min-h-screen p-3 md:p-6">
+
+    <div id="root" class="max-w-6xl mx-auto"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useCallback, useRef } = React;
+
+        const INITIAL_CATEGORIES = [
+            { id: 'all',     name: 'Wszystkie', icon: '✨', immutable: true },
+            { id: 'praca',   name: 'Praca',     icon: '💼' },
+            { id: 'nauka',   name: 'Nauka',     icon: '📚' },
+            { id: 'zdrowie', name: 'Zdrowie',   icon: '🍏' },
+            { id: 'finanse', name: 'Finanse',   icon: '💰' },
+            { id: 'inne',    name: 'Inne',      icon: '⚙️'  }
+        ];
+
+        const TODAY = new Date().toISOString().split('T')[0];
+
+        // Wyliczane daty dla realizmu w wizualizacji
+        const getOffsetDate = (days) => {
+            const d = new Date();
+            d.setDate(d.getDate() + days);
+            return d.toISOString().split('T')[0];
+        };
+
+        const INITIAL_TASKS = [
+            { id: 1, title: 'Wizyta u dentysty', category: 'zdrowie', priority: 'Wysoki', dateType: 'single', date1: getOffsetDate(2), time1: '15:40', notes: 'Przegląd i higienizacja', completed: false },
+            { id: 2, title: 'Egzamin semestralny', category: 'nauka', priority: 'Wysoki', dateType: 'single', date1: getOffsetDate(4), time1: '10:00', notes: 'Zabrać legitymację studencką i długopis', completed: false },
+            { id: 3, title: 'Dyżur w pracy', category: 'praca', priority: 'Średni', dateType: 'duration', date1: getOffsetDate(6), time1: '08:00', date2: getOffsetDate(7), time2: '12:00', notes: 'Weekendowy dyżur zmianowy, sprawdzić raporty', completed: false },
+            { id: 4, title: 'Termin płatności rachunków', category: 'finanse', priority: 'Średni', dateType: 'single', date1: getOffsetDate(10), time1: '', notes: 'Prąd, woda, czynsz i internet', completed: false }
+        ];
+
+        function ToastContainer({ toasts, removeToast }) {
+            return (
+                <div className="fixed top-4 right-4 z-[9999] flex flex-col gap-2 pointer-events-none">
+                    {toasts.map(t => (
+                        <div key={t.id}
+                            className={`pointer-events-auto flex items-center gap-3 px-4 py-3 rounded-2xl shadow-xl border text-xs font-bold max-w-xs
+                                ${t.leaving ? 'toast-out' : 'toast-in'}
+                                ${t.type === 'success' ? 'bg-emerald-50 border-emerald-200 text-emerald-800 dark:bg-emerald-950 dark:border-emerald-800 dark:text-emerald-200' :
+                                  t.type === 'error'   ? 'bg-rose-50 border-rose-200 text-rose-800 dark:bg-rose-950 dark:border-rose-800 dark:text-rose-200' :
+                                  t.type === 'warning' ? 'bg-amber-50 border-amber-200 text-amber-800 dark:bg-amber-950 dark:border-amber-800 dark:text-amber-200' :
+                                                         'bg-white border-zinc-200 text-zinc-800 dark:bg-zincDarkCard dark:border-zinc-700 dark:text-zinc-200'}`}
+                        >
+                            <span className="text-base">
+                                {t.type === 'success' ? '✅' : t.type === 'error' ? '❌' : t.type === 'warning' ? '⚠️' : 'ℹ️'}
+                            </span>
+                            <span className="flex-1">{t.message}</span>
+                            <button onClick={() => removeToast(t.id)} className="opacity-50 hover:opacity-100 text-sm ml-1">✕</button>
+                        </div>
+                    ))}
+                </div>
+            );
+        }
+
+        function ConfirmModal({ config, onConfirm, onCancel }) {
+            if (!config) return null;
+            return (
+                <div className="fixed inset-0 z-[9998] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"
+                     onClick={onCancel}>
+                    <div className="modal-enter bg-white dark:bg-zincDarkCard border border-zinc-200 dark:border-zinc-700 rounded-3xl shadow-2xl p-6 max-w-sm w-full"
+                         onClick={e => e.stopPropagation()}>
+                        <div className="text-2xl mb-3 text-center">{config.icon || '❓'}</div>
+                        <h3 className="font-extrabold text-sm text-center text-zinc-800 dark:text-zinc-100 mb-2">{config.title}</h3>
+                        <p className="text-xs text-zinc-500 dark:text-zinc-400 text-center mb-6">{config.message}</p>
+                        <div className="flex gap-3">
+                            <button onClick={onCancel}
+                                className="flex-1 py-2.5 rounded-xl border border-zinc-200 dark:border-zinc-700 text-xs font-bold text-zinc-600 dark:text-zinc-300 bg-zinc-50 dark:bg-zincDarkInput hover:bg-zinc-100 dark:hover:bg-zinc-700 transition">
+                                {config.cancelLabel || 'Anuluj'}
+                            </button>
+                            <button onClick={onConfirm}
+                                className={`flex-1 py-2.5 rounded-xl text-xs font-bold text-white transition
+                                    ${config.danger ? 'bg-rose-500 hover:bg-rose-600' : 'bg-zinc-800 dark:bg-zinc-200 dark:text-zinc-900 hover:bg-zinc-700'}`}>
+                                {config.confirmLabel || 'OK'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function DailyProgress({ tasks, todayStr }) {
+            const todayTasks   = tasks.filter(t => t.date1 === todayStr);
+            const doneToday    = todayTasks.filter(t => t.completed).length;
+            const totalToday   = todayTasks.length;
+            const pct          = totalToday === 0 ? 0 : Math.round((doneToday / totalToday) * 100);
+
+            return (
+                <div className="flex items-center gap-3 w-full sm:w-auto min-w-[160px]">
+                    <div className="flex-1">
+                        <div className="flex justify-between text-[10px] font-bold text-zinc-400 mb-1">
+                            <span>Postęp dzienny</span>
+                            <span>{doneToday}/{totalToday}</span>
+                        </div>
+                        <div className="h-1.5 bg-zinc-100 dark:bg-zinc-700 rounded-full overflow-hidden">
+                            <div className="progress-bar h-full rounded-full bg-zinc-600 dark:bg-zinc-300 transition-all duration-700"
+                                 style={{ width: `${pct}%` }} />
+                        </div>
+                    </div>
+                    <span className="text-xs font-extrabold text-zinc-500 dark:text-zinc-400 w-8 text-right">{pct}%</span>
+                </div>
+            );
+        }
+
+        function TaskCard({ task, onToggle, onEdit, formatBadge, compact }) {
+            const priorityStyles = {
+                'Wysoki': {
+                    card: 'bg-rose-50/80 border-rose-200/60 dark:bg-rose-950/20 dark:border-rose-900/40 text-rose-950 dark:text-rose-100',
+                    muted: 'text-rose-600/80 dark:text-rose-300/80',
+                    dot:   'bg-rose-400'
+                },
+                'Średni': {
+                    card: 'bg-amber-50/80 border-amber-200/60 dark:bg-amber-950/20 dark:border-amber-900/40 text-amber-950 dark:text-amber-100',
+                    muted: 'text-amber-600/80 dark:text-amber-300/80',
+                    dot:   'bg-amber-400'
+                },
+                'Niski': {
+                    card: 'bg-emerald-50/80 border-emerald-200/60 dark:bg-emerald-950/20 dark:border-emerald-900/40 text-emerald-950 dark:text-emerald-100',
+                    muted: 'text-emerald-600/80 dark:text-emerald-300/80',
+                    dot:   'bg-emerald-400'
+                }
+            };
+            const s = priorityStyles[task.priority] || priorityStyles['Niski'];
+
+            if (task.completed && compact) {
+                return (
+                    <div className="p-3 bg-white dark:bg-zincDarkCard border border-zinc-100/50 dark:border-zinc-800 rounded-xl flex items-center justify-between opacity-40">
+                        <div className="flex items-center gap-3 min-w-0">
+                            <input type="checkbox" checked className="task-check" onChange={onToggle} />
+                            <span className="text-sm font-medium text-zinc-500 dark:text-zinc-400 truncate line-through">{task.title}</span>
+                        </div>
+                        <button onClick={onEdit} className="text-[10px] font-bold text-zinc-400 px-2 py-1 hover:text-zinc-600 transition ml-3">›</button>
+                    </div>
+                );
+            }
+
+            return (
+                <div className={`task-card p-4 border rounded-2xl flex items-center justify-between shadow-sm ${s.card}`}>
+                    <div className="flex items-center gap-4 min-w-0 flex-1">
+                        <input type="checkbox" checked={task.completed} onChange={onToggle}
+                               className="task-check opacity-60 hover:opacity-100" />
+                        <div className="min-w-0 flex-1">
+                            <span className="block text-sm font-bold truncate">{task.title}</span>
+                            <div className="flex items-center gap-2 mt-1 flex-wrap">
+                                <span className={`inline-flex items-center gap-1 text-[10px] font-extrabold`}>
+                                    <span className={`w-1.5 h-1.5 rounded-full ${s.dot}`} />
+                                    {task.priority}
+                                </span>
+                                {formatBadge(task) && (
+                                    <span className={`text-[10px] font-bold ${s.muted}`}>📅 {formatBadge(task)}</span>
+                                )}
+                                {task.notes && (
+                                    <span className={`text-[10px] font-medium ${s.muted} truncate max-w-[120px]`}>💬 {task.notes}</span>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                    <button onClick={onEdit}
+                            className="text-xs font-bold px-3 py-1.5 opacity-60 hover:opacity-100 transition ml-4 flex-shrink-0">
+                        Szczegóły ›
+                    </button>
+                </div>
+            );
+        }
+
+        function SettingsView({ isDarkMode, setIsDarkMode, tasks, setTasks, categories, setCategories, showToast, showConfirm }) {
+            const stats = useMemo(() => {
+                const total     = tasks.length;
+                const done      = tasks.filter(t => t.completed).length;
+                const high      = tasks.filter(t => t.priority === 'Wysoki' && !t.completed).length;
+                const overdue   = tasks.filter(t => !t.completed && t.date1 && t.date1 < TODAY).length;
+                return { total, done, high, overdue };
+            }, [tasks]);
+
+            const handleClearCompleted = () => {
+                showConfirm({
+                    icon: '🗑️',
+                    title: 'Usuń ukończone zadania',
+                    message: `Zostanie usuniętych ${tasks.filter(t => t.completed).length} zadań. Operacja jest nieodwracalna.`,
+                    confirmLabel: 'Usuń wszystkie',
+                    danger: true
+                }, () => {
+                    setTasks(prev => prev.filter(t => !t.completed));
+                    showToast('Ukończone zadania zostały usunięte.', 'success');
+                });
+            };
+
+            const handleResetAll = () => {
+                showConfirm({
+                    icon: '⚠️',
+                    title: 'Resetuj całą aplikację',
+                    message: 'Zostaną usunięte WSZYSTKIE zadania i przywrócone dane domyślne. Nie można cofnąć.',
+                    confirmLabel: 'Resetuj',
+                    danger: true
+                }, () => {
+                    setTasks(INITIAL_TASKS);
+                    setCategories(INITIAL_CATEGORIES);
+                    showToast('Aplikacja została zresetowana do ustawień domyślnych.', 'warning');
+                });
+            };
+
+            const handleExportJSON = () => {
+                const data = JSON.stringify({ tasks, categories, exportedAt: new Date().toISOString() }, null, 2);
+                const blob = new Blob([data], { type: 'application/json' });
+                const url  = URL.createObjectURL(blob);
+                const a    = document.createElement('a');
+                a.href = url; a.download = `TaskApp-backup-${TODAY}.json`; a.click();
+                URL.revokeObjectURL(url);
+                showToast('Dane wyeksportowane jako JSON.', 'success');
+            };
+
+            const StatCard = ({ label, value, color }) => (
+                <div className={`p-4 rounded-2xl border text-center ${color}`}>
+                    <div className="text-2xl font-black mb-1">{value}</div>
+                    <div className="text-[10px] font-bold uppercase tracking-wider opacity-70">{label}</div>
+                </div>
+            );
+
+            return (
+                <main className="lg:col-span-12 space-y-5 view-enter">
+                    <div className="bg-white dark:bg-zincDarkCard border border-zinc-200/40 dark:border-zinc-800/60 rounded-3xl p-6 shadow-sm">
+                        <h2 className="text-xs font-extrabold text-zinc-400 uppercase tracking-widest mb-4">📊 Statystyki</h2>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                            <StatCard label="Wszystkich zadań"   value={stats.total}   color="bg-zinc-50 dark:bg-zincDarkInput border-zinc-200/50 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200" />
+                            <StatCard label="Ukończonych"         value={stats.done}    color="bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200/50 dark:border-emerald-800/50 text-emerald-700 dark:text-emerald-300" />
+                            <StatCard label="Wysoki priorytet"    value={stats.high}    color="bg-rose-50 dark:bg-rose-950/30 border-rose-200/50 dark:border-rose-800/50 text-rose-700 dark:text-rose-300" />
+                            <StatCard label="Przeterminowanych"   value={stats.overdue} color="bg-amber-50 dark:bg-amber-950/30 border-amber-200/50 dark:border-amber-800/50 text-amber-700 dark:text-amber-300" />
+                        </div>
+                    </div>
+
+                    <div className="bg-white dark:bg-zincDarkCard border border-zinc-200/40 dark:border-zinc-800/60 rounded-3xl p-6 shadow-sm">
+                        <h2 className="text-xs font-extrabold text-zinc-400 uppercase tracking-widest mb-4">🎨 Wygląd</h2>
+                        <div className="flex items-center justify-between p-4 bg-zinc-50 dark:bg-zincDarkInput border border-zinc-200/50 dark:border-zinc-700 rounded-2xl">
+                            <div>
+                                <div className="text-sm font-bold text-zinc-800 dark:text-zinc-100">Tryb ciemny</div>
+                                <div className="text-xs text-zinc-400 mt-0.5">Zmienia schemat kolorów aplikacji</div>
+                            </div>
+                            <button onClick={() => setIsDarkMode(!isDarkMode)}
+                                className={`relative w-12 h-6 rounded-full transition-all duration-300 ${isDarkMode ? 'bg-zinc-600 dark:bg-zinc-400' : 'bg-zinc-200'}`}>
+                                <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-sm transition-all duration-300 ${isDarkMode ? 'left-6' : 'left-0.5'}`} />
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="bg-white dark:bg-zincDarkCard border border-zinc-200/40 dark:border-zinc-800/60 rounded-3xl p-6 shadow-sm">
+                        <h2 className="text-xs font-extrabold text-zinc-400 uppercase tracking-widest mb-4">💾 Dane</h2>
+                        <div className="space-y-3">
+                            <button onClick={handleExportJSON}
+                                className="w-full flex items-center justify-between p-4 bg-zinc-50 dark:bg-zincDarkInput border border-zinc-200/50 dark:border-zinc-700 rounded-2xl hover:bg-zinc-100 dark:hover:bg-zinc-700 transition text-left">
+                                <div>
+                                    <div className="text-sm font-bold text-zinc-800 dark:text-zinc-100">Eksportuj dane (JSON)</div>
+                                    <div className="text-xs text-zinc-400 mt-0.5">Pobierz kopię zapasową wszystkich zadań</div>
+                                </div>
+                                <span className="text-zinc-400 text-sm">⬇️</span>
+                            </button>
+
+                            <button onClick={handleClearCompleted}
+                                className="w-full flex items-center justify-between p-4 bg-amber-50/50 dark:bg-amber-950/10 border border-amber-200/50 dark:border-amber-800/30 rounded-2xl hover:bg-amber-50 dark:hover:bg-amber-950/20 transition text-left">
+                                <div>
+                                    <div className="text-sm font-bold text-amber-700 dark:text-amber-300">Usuń ukończone zadania</div>
+                                    <div className="text-xs text-amber-500 dark:text-amber-400 mt-0.5">Trwale usuwa {tasks.filter(t=>t.completed).length} zadań oznaczonych jako wykonane</div>
+                                </div>
+                                <span className="text-amber-500 text-sm">🗑️</span>
+                            </button>
+
+                            <button onClick={handleResetAll}
+                                className="w-full flex items-center justify-between p-4 bg-rose-50/50 dark:bg-rose-950/10 border border-rose-200/50 dark:border-rose-800/30 rounded-2xl hover:bg-rose-50 dark:hover:bg-rose-950/20 transition text-left">
+                                <div>
+                                    <div className="text-sm font-bold text-rose-600 dark:text-rose-400">Reset do ustawień domyślnych</div>
+                                    <div className="text-xs text-rose-400 mt-0.5">Usuwa WSZYSTKIE dane i przywraca przykładowe zadania</div>
+                                </div>
+                                <span className="text-rose-400 text-sm">⚠️</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="bg-white dark:bg-zincDarkCard border border-zinc-200/40 dark:border-zinc-800/60 rounded-3xl p-6 shadow-sm">
+                        <h2 className="text-xs font-extrabold text-zinc-400 uppercase tracking-widest mb-4">ℹ️ O aplikacji</h2>
+                        <div className="space-y-2 text-xs text-zinc-500 dark:text-zinc-400">
+                            <div className="flex justify-between"><span className="font-bold">Nazwa</span><span>TaskApp v2.0</span></div>
+                            <div className="flex justify-between"><span className="font-bold">Technologie</span><span>React 18, Tailwind CSS</span></div>
+                            <div className="flex justify-between"><span className="font-bold">Przechowywanie</span><span>localStorage (offline)</span></div>
+                            <div className="flex justify-between"><span className="font-bold">Projekt</span><span>Projektowanie Interfejsów UI</span></div>
+                        </div>
+                    </div>
+                </main>
+            );
+        }
+
+        function TaskApp() {
+
+            const [tasks,      setTasks]      = useState(() => { try { return JSON.parse(localStorage.getItem('p_tasks')) || INITIAL_TASKS; } catch { return INITIAL_TASKS; } });
+            const [categories, setCategories] = useState(() => { try { return JSON.parse(localStorage.getItem('p_cats'))  || INITIAL_CATEGORIES; } catch { return INITIAL_CATEGORIES; } });
+            const [isDarkMode, setIsDarkMode] = useState(() => localStorage.getItem('p_theme') === 'dark');
+
+            const [currentView,          setCurrentView]          = useState('tasks');
+            const [activeCategory,       setActiveCategory]       = useState('all');
+            const [searchQuery,          setSearchQuery]          = useState('');
+            const [sortBy,               setSortBy]               = useState('date-asc');
+            const [selectedCalendarDate, setSelectedCalendarDate] = useState(TODAY);
+            const [sectionsExpanded,     setSectionsExpanded]     = useState({ today: true, upcoming: true, completed: false });
+
+            const [formMode,       setFormMode]       = useState('add');
+            const [selectedTaskId, setSelectedTaskId] = useState(null);
+            const [inputTitle,     setInputTitle]     = useState('');
+            const [inputCategory,  setInputCategory]  = useState('praca');
+            const [inputPriority,  setInputPriority]  = useState('Średni');
+            const [inputDateType,  setInputDateType]  = useState('single');
+            const [inputDate1,     setInputDate1]     = useState('');
+            const [inputTime1,     setInputTime1]     = useState('');
+            const [inputDate2,     setInputDate2]     = useState('');
+            const [inputTime2,     setInputTime2]     = useState('');
+            const [inputNotes,     setInputNotes]     = useState('');
+            const [validationErr,  setValidationErr]  = useState('');
+
+            const [toasts,     setToasts]     = useState([]);
+            const toastTimers = useRef({});
+
+            const showToast = useCallback((message, type = 'info', duration = 3500) => {
+                const id = Date.now();
+                setToasts(prev => [...prev, { id, message, type, leaving: false }]);
+                toastTimers.current[id] = setTimeout(() => {
+                    setToasts(prev => prev.map(t => t.id === id ? { ...t, leaving: true } : t));
+                    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 250);
+                }, duration);
+            }, []);
+
+            const removeToast = useCallback((id) => {
+                clearTimeout(toastTimers.current[id]);
+                setToasts(prev => prev.filter(t => t.id !== id));
+            }, []);
+
+            const [confirmConfig,   setConfirmConfig]   = useState(null);
+            const [confirmCallback, setConfirmCallback] = useState(null);
+
+            const showConfirm = useCallback((config, onConfirm) => {
+                setConfirmConfig(config);
+                setConfirmCallback(() => onConfirm);
+            }, []);
+
+            const handleConfirmOk = useCallback(() => {
+                if (confirmCallback) confirmCallback();
+                setConfirmConfig(null);
+                setConfirmCallback(null);
+            }, [confirmCallback]);
+
+            const handleConfirmCancel = useCallback(() => {
+                setConfirmConfig(null);
+                setConfirmCallback(null);
+            }, []);
+
+            useEffect(() => { localStorage.setItem('p_tasks', JSON.stringify(tasks)); },      [tasks]);
+            useEffect(() => { localStorage.setItem('p_cats',  JSON.stringify(categories)); }, [categories]);
+            useEffect(() => {
+                localStorage.setItem('p_theme', isDarkMode ? 'dark' : 'light');
+                document.documentElement.classList.toggle('dark', isDarkMode);
+            }, [isDarkMode]);
+
+            const formatTaskBadge = useCallback((task) => {
+                if (!task.date1) return '';
+                const monthsShort = ['sty','lut','mar','kwi','maj','cze','lip','sie','wrz','paź','lis','gru'];
+                const d1 = new Date(task.date1);
+                const tom = new Date(); tom.setDate(tom.getDate() + 1);
+                const tomorrowStr = tom.toISOString().split('T')[0];
+
+                let dateText = task.date1 === TODAY ? 'Dziś'
+                             : task.date1 === tomorrowStr ? 'Jutro'
+                             : `${d1.getDate()} ${monthsShort[d1.getMonth()]}`;
+
+                if (task.dateType === 'single') {
+                    return task.time1 ? `${dateText}, ${task.time1}` : dateText;
+                }
+                const d2 = new Date(task.date2 || task.date1);
+                const sameDayEnd = task.date1 === task.date2 ? '' : `${d2.getDate()} ${monthsShort[d2.getMonth()]} `;
+                return `${dateText} ${task.time1 || ''} → ${sameDayEnd}${task.time2 || ''}`;
+            }, []);
+
+            const [editCatModal, setEditCatModal] = useState(null); 
+            const [editCatName,  setEditCatName]  = useState('');
+
+            const openCatEdit = (cat) => {
+                setEditCatName(cat.name);
+                setEditCatModal({ cat, mode: 'edit' });
+            };
+
+            const handleSaveCat = () => {
+                if (!editCatName.trim()) return;
+                setCategories(prev => prev.map(c =>
+                    c.id === editCatModal.cat.id ? { ...c, name: editCatName.trim() } : c
+                ));
+                setEditCatModal(null);
+                showToast(`Kategoria "${editCatName.trim()}" zaktualizowana.`, 'success');
+            };
+
+            const handleDeleteCat = () => {
+                const cat = editCatModal.cat;
+                setCategories(prev => prev.filter(c => c.id !== cat.id));
+                setTasks(prev => prev.map(t => t.category === cat.id ? { ...t, category: 'inne' } : t));
+                if (activeCategory === cat.id) setActiveCategory('all');
+                setEditCatModal(null);
+                showToast(`Kategoria "${cat.name}" usunięta. Zadania przeniesiono do "Inne".`, 'warning');
+            };
+
+            const handleAddCategory = () => {
+                setEditCatName('');
+                setEditCatModal({ cat: null, mode: 'add' });
+            };
+
+            const handleSaveNewCat = () => {
+                const name = editCatName.trim();
+                if (!name) return;
+                const id = name.toLowerCase().replace(/\s+/g, '-');
+                if (categories.some(c => c.id === id)) {
+                    showToast('Kategoria o tej nazwie już istnieje.', 'error');
+                    return;
+                }
+                setCategories(prev => [...prev, { id, name, icon: '📌' }]); // Domyślna emotka przypisywana w tle
+                setEditCatModal(null);
+                showToast(`Kategoria "${name}" została dodana.`, 'success');
+            };
+
+            const openAddForm = () => {
+                setFormMode('add');
+                setSelectedTaskId(null);
+                setInputTitle('');
+                setInputCategory(activeCategory === 'all' ? 'praca' : activeCategory);
+                setInputPriority('Średni');
+                setInputDateType('single');
+                setInputDate1(TODAY);
+                setInputTime1('');
+                setInputDate2('');
+                setInputTime2('');
+                setInputNotes('');
+                setValidationErr('');
+                setCurrentView('form');
+            };
+
+            const openEditForm = (task) => {
+                setFormMode('edit');
+                setSelectedTaskId(task.id);
+                setInputTitle(task.title);
+                setInputCategory(task.category);
+                setInputPriority(task.priority || 'Średni');
+                setInputDateType(task.dateType || 'single');
+                setInputDate1(task.date1 || '');
+                setInputTime1(task.time1 || '');
+                setInputDate2(task.date2 || '');
+                setInputTime2(task.time2 || '');
+                setInputNotes(task.notes || '');
+                setValidationErr('');
+                setCurrentView('form');
+            };
+
+            const handleSaveForm = (e) => {
+                e.preventDefault();
+                if (!inputTitle.trim()) {
+                    setValidationErr('Nazwa zadania nie może być pusta.');
+                    return;
+                }
+                if (inputTitle.trim().length < 3) {
+                    setValidationErr('Nazwa musi zawierać minimum 3 znaki.');
+                    return;
+                }
+                if (inputDateType === 'duration' && inputDate1 && inputDate2) {
+                    const start = new Date(`${inputDate1}T${inputTime1 || '00:00'}`);
+                    const end   = new Date(`${inputDate2}T${inputTime2 || '23:59'}`);
+                    if (end < start) {
+                        setValidationErr('Data zakończenia nie może być wcześniejsza niż data rozpoczęcia.');
+                        return;
+                    }
+                }
+
+                const payload = {
+                    title:    inputTitle.trim(),
+                    category: inputCategory,
+                    priority: inputPriority,
+                    dateType: inputDateType,
+                    date1:    inputDate1,
+                    time1:    inputTime1,
+                    date2:    inputDateType === 'duration' ? inputDate2 : '',
+                    time2:    inputDateType === 'duration' ? inputTime2 : '',
+                    notes:    inputNotes.trim()
+                };
+
+                if (formMode === 'add') {
+                    setTasks(prev => [{ id: Date.now(), ...payload, completed: false }, ...prev]);
+                    showToast('Zadanie zostało dodane! 🎉', 'success');
+                } else {
+                    setTasks(prev => prev.map(t => t.id === selectedTaskId ? { ...t, ...payload } : t));
+                    showToast('Zmiany zostały zapisane.', 'success');
+                }
+                setValidationErr('');
+                setCurrentView('tasks');
+            };
+
+            const handleDeleteTask = () => {
+                if (formMode !== 'edit') return;
+                showConfirm({
+                    icon: '🗑️',
+                    title: 'Usuń zadanie',
+                    message: 'Tej operacji nie można cofnąć. Zadanie zostanie trwale usunięte.',
+                    confirmLabel: 'Usuń',
+                    danger: true
+                }, () => {
+                    setTasks(prev => prev.filter(t => t.id !== selectedTaskId));
+                    setCurrentView('tasks');
+                    showToast('Zadanie usunięte.', 'warning');
+                });
+            };
+
+            const processedTasks = useMemo(() => {
+                let result = tasks.filter(t => {
+                    const catMatch    = activeCategory === 'all' || t.category === activeCategory;
+                    const searchMatch = t.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                                        (t.notes && t.notes.toLowerCase().includes(searchQuery.toLowerCase()));
+                    return catMatch && searchMatch;
+                });
+                return [...result].sort((a, b) => {
+                    if (sortBy === 'date-asc' || sortBy === 'date-desc') {
+                        const dtA = new Date(`${a.date1 || '9999-12-31'}T${a.time1 || '00:00'}`);
+                        const dtB = new Date(`${b.date1 || '9999-12-31'}T${b.time1 || '00:00'}`);
+                        return sortBy === 'date-asc' ? dtA - dtB : dtB - dtA;
+                    }
+                    if (sortBy === 'priority') {
+                        const w = { 'Wysoki': 3, 'Średni': 2, 'Niski': 1 };
+                        return w[b.priority] - w[a.priority];
+                    }
+                    return 0;
+                });
+            }, [tasks, activeCategory, searchQuery, sortBy]);
+
+            const dashboardSections = useMemo(() => {
+                const today = [], upcoming = [], completed = [];
+                processedTasks.forEach(t => {
+                    if (t.completed) completed.push(t);
+                    else if (t.date1 === TODAY) today.push(t);
+                    else upcoming.push(t);
+                });
+                return { today, upcoming, completed };
+            }, [processedTasks]);
+
+            const todayActiveCount = useMemo(() =>
+                tasks.filter(t => !t.completed && t.date1 === TODAY).length
+            , [tasks]);
+
+            const calendarMatrix = useMemo(() => {
+                const d     = new Date(selectedCalendarDate);
+                const year  = d.getFullYear();
+                const month = d.getMonth();
+                const first = new Date(year, month, 1).getDay();
+                const total = new Date(year, month + 1, 0).getDate();
+                const off   = first === 0 ? 6 : first - 1;
+                const cells = [];
+                for (let i = 0; i < off; i++) cells.push(null);
+                for (let day = 1; day <= total; day++) {
+                    cells.push({
+                        day,
+                        dateString: `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`
+                    });
+                }
+                return cells;
+            }, [selectedCalendarDate]);
+
+            const calendarLabel = useMemo(() =>
+                new Date(selectedCalendarDate).toLocaleDateString('pl-PL', { month: 'long', year: 'numeric' })
+            , [selectedCalendarDate]);
+
+            const calendarDayTasks = useMemo(() =>
+                tasks.filter(t => t.date1 === selectedCalendarDate)
+            , [tasks, selectedCalendarDate]);
+
+            const shiftMonth = (dir) => {
+                const d = new Date(selectedCalendarDate);
+                d.setMonth(d.getMonth() + dir);
+                const safe = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+                if (d > safe) d.setDate(safe.getDate());
+                setSelectedCalendarDate(d.toISOString().split('T')[0]);
+            };
+
+            const CatModal = () => {
+                if (!editCatModal) return null;
+                const isAdd = editCatModal.mode === 'add';
+                return (
+                    <div className="fixed inset-0 z-[9997] bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"
+                         onClick={() => setEditCatModal(null)}>
+                        <div className="modal-enter bg-white dark:bg-zincDarkCard border border-zinc-200 dark:border-zinc-700 rounded-3xl shadow-2xl p-6 max-w-sm w-full"
+                             onClick={e => e.stopPropagation()}>
+                            <h3 className="font-extrabold text-sm text-zinc-800 dark:text-zinc-100 mb-4">
+                                {isAdd ? '➕ Nowa kategoria' : `✏️ Edytuj: ${editCatModal.cat.name}`}
+                            </h3>
+                            <div className="space-y-3 mb-4">
+                                <div>
+                                    <label className="text-[10px] font-bold text-zinc-400 uppercase block mb-1">Nazwa kategorii</label>
+                                    <input value={editCatName} onChange={e => setEditCatName(e.target.value)}
+                                        className="w-full p-2.5 border border-zinc-200 dark:border-zinc-700 rounded-xl text-sm bg-zinc-50 dark:bg-zincDarkInput outline-none font-medium"
+                                        placeholder="Wpisz nazwę..." />
+                                </div>
+                            </div>
+                            <div className="flex gap-2">
+                                {!isAdd && !editCatModal.cat.immutable && (
+                                    <button onClick={() => setEditCatModal({ ...editCatModal, mode: 'confirm-delete' })}
+                                        className="px-3 py-2.5 rounded-xl text-xs font-bold text-rose-500 bg-rose-50 dark:bg-rose-950/20 border border-rose-200/50 dark:border-rose-800/30 hover:bg-rose-100 transition">
+                                        Usuń
+                                    </button>
+                                )}
+                                <button onClick={() => setEditCatModal(null)}
+                                    className="flex-1 py-2.5 rounded-xl border border-zinc-200 dark:border-zinc-700 text-xs font-bold text-zinc-600 dark:text-zinc-300 bg-zinc-50 dark:bg-zincDarkInput hover:bg-zinc-100 dark:hover:bg-zinc-700 transition">
+                                    Anuluj
+                                </button>
+                                <button onClick={isAdd ? handleSaveNewCat : handleSaveCat}
+                                    className="flex-1 py-2.5 rounded-xl text-xs font-bold bg-zinc-800 dark:bg-zinc-200 text-white dark:text-zinc-900 hover:bg-zinc-700 transition">
+                                    {isAdd ? 'Dodaj' : 'Zapisz'}
+                                </button>
+                            </div>
+                            {editCatModal.mode === 'confirm-delete' && (
+                                <div className="mt-3 p-3 bg-rose-50 dark:bg-rose-950/20 border border-rose-200/50 dark:border-rose-800/30 rounded-xl">
+                                    <p className="text-xs font-bold text-rose-600 dark:text-rose-400 mb-2">
+                                        Potwierdzasz usunięcie? Zadania z tej kategorii trafią do "Inne".
+                                    </p>
+                                    <div className="flex gap-2">
+                                        <button onClick={() => setEditCatModal({ ...editCatModal, mode: 'edit' })}
+                                            className="flex-1 py-1.5 rounded-lg text-xs font-bold border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zincDarkCard text-zinc-600 dark:text-zinc-300">
+                                            Cofnij
+                                        </button>
+                                        <button onClick={handleDeleteCat}
+                                            className="flex-1 py-1.5 rounded-lg text-xs font-bold bg-rose-500 hover:bg-rose-600 text-white transition">
+                                            Tak, usuń
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                );
+            };
+
+            const CategoriesSidebar = () => (
+                <aside className="lg:col-span-4 space-y-4 order-2">
+                    <div className="bg-white dark:bg-zincDarkCard p-5 rounded-3xl border border-zinc-200/40 dark:border-zinc-800/60 shadow-sm">
+                        <div className="flex justify-between items-center mb-4">
+                            <h3 className="text-xs font-bold text-zinc-400 dark:text-zinc-400 uppercase tracking-wider">Kategorie</h3>
+                            <button onClick={handleAddCategory}
+                                className="text-xs font-bold text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200 bg-zinc-100 dark:bg-zinc-700 px-2.5 py-1 rounded-lg transition">
+                                + Nowa
+                            </button>
+                        </div>
+                        <div className="flex flex-row lg:flex-col gap-2 overflow-x-auto lg:overflow-x-visible no-scrollbar pb-1 lg:pb-0">
+                            {categories.map(cat => {
+                                const isActive = activeCategory === cat.id;
+                                const count = cat.id === 'all' ? tasks.length : tasks.filter(t => t.category === cat.id).length;
+                                const done  = cat.id === 'all'
+                                    ? tasks.filter(t => t.completed).length
+                                    : tasks.filter(t => t.category === cat.id && t.completed).length;
+                                return (
+                                    <div key={cat.id} className="relative group flex-shrink-0 lg:flex-shrink w-full">
+                                        <button
+                                            onClick={() => setActiveCategory(cat.id)}
+                                            className={`cat-active px-4 py-3 rounded-2xl font-bold text-xs flex items-center gap-2.5 border w-full text-left pr-10
+                                                ${isActive
+                                                    ? 'bg-zinc-800 text-white border-zinc-800 dark:bg-zinc-200 dark:text-zinc-900 dark:border-zinc-200 shadow-sm'
+                                                    : 'bg-zinc-50 dark:bg-zincDarkInput text-zinc-600 dark:text-zinc-300 border-zinc-200/40 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800/60'}`}
+                                        >
+                                            <span>{cat.icon}</span>
+                                            <span className="truncate flex-1">{cat.name}</span>
+                                            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-lg ${isActive ? 'bg-white/20 text-white dark:bg-zinc-900 dark:text-white' : 'bg-zinc-200/50 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400'}`}>
+                                                {count}
+                                            </span>
+                                        </button>
+                                        {!cat.immutable && (
+                                            <button
+                                                onClick={() => openCatEdit(cat)}
+                                                className={`absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 rounded-lg flex items-center justify-center text-[10px] transition
+                                                    opacity-0 group-hover:opacity-100
+                                                    ${isActive ? 'bg-white/20 text-white' : 'bg-zinc-200 dark:bg-zinc-700 text-zinc-500 dark:text-zinc-300 hover:bg-zinc-300'}`}
+                                                title="Edytuj kategorię"
+                                            >
+                                                ✏️
+                                            </button>
+                                        )}
+                                        {count > 0 && !isActive && (
+                                            <div className="absolute bottom-0 left-2 right-10 h-0.5 bg-zinc-100 dark:bg-zinc-800 rounded-full overflow-hidden">
+                                                <div className="h-full bg-zinc-400/50 dark:bg-zinc-500/50 rounded-full"
+                                                     style={{ width: `${Math.round((done / count) * 100)}%` }} />
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+
+                    <div className="bg-white dark:bg-zincDarkCard p-5 rounded-3xl border border-zinc-200/40 dark:border-zinc-800/60 shadow-sm">
+                        <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-3">Szybki podgląd</h3>
+                        <div className="space-y-2">
+                            {[
+                                { label: 'Do zrobienia dziś',    val: tasks.filter(t => !t.completed && t.date1 === TODAY).length,            color: 'text-zinc-700 dark:text-zinc-200' },
+                                { label: 'Wysoki priorytet',      val: tasks.filter(t => !t.completed && t.priority === 'Wysoki').length,       color: 'text-rose-600 dark:text-rose-400' },
+                                { label: 'Przeterminowane',       val: tasks.filter(t => !t.completed && t.date1 && t.date1 < TODAY).length,   color: 'text-amber-600 dark:text-amber-400' },
+                                { label: 'Ukończone łącznie',     val: tasks.filter(t => t.completed).length,                                   color: 'text-emerald-600 dark:text-emerald-400' },
+                            ].map(item => (
+                                <div key={item.label} className="flex items-center justify-between text-xs">
+                                    <span className="text-zinc-400 font-medium">{item.label}</span>
+                                    <span className={`font-extrabold ${item.color}`}>{item.val}</span>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </aside>
+            );
+
+            const SectionBlock = ({ title, items, expanded, onToggle, compact }) => (
+                <div className="border border-zinc-200/30 dark:border-zinc-800/40 rounded-3xl bg-white dark:bg-zincDarkCard shadow-sm overflow-hidden">
+                    <button onClick={onToggle}
+                        className="w-full px-5 py-3.5 bg-zinc-50/50 dark:bg-zinc-800/10 flex justify-between items-center font-bold text-xs text-zinc-500 dark:text-zinc-400 tracking-wide border-b dark:border-zinc-800/80">
+                        <span>{title} ({items.length})</span>
+                        <span className="text-xs opacity-40">{expanded ? '▲' : '▼'}</span>
+                    </button>
+                    {expanded && (
+                        <div className="p-3 space-y-2.5">
+                            {items.length === 0 ? (
+                                <div className="text-center py-8">
+                                    <div className="text-2xl mb-2 opacity-40">
+                                        {title.includes('DZIŚ') ? '🌤️' : title.includes('NADCH') ? '📭' : '✅'}
+                                    </div>
+                                    <p className="text-xs text-zinc-400 font-medium">
+                                        {title.includes('DZIŚ')  ? 'Brak zadań na dziś – czas na odpoczynek!' :
+                                         title.includes('NADCH') ? 'Brak nadchodzących zadań.' :
+                                                                    'Brak ukończonych zadań.'}
+                                    </p>
+                                </div>
+                            ) : (
+                                items.map(t => (
+                                    <TaskCard key={t.id}
+                                        task={t}
+                                        onToggle={() => {
+                                            setTasks(prev => prev.map(x => x.id === t.id ? { ...x, completed: !x.completed } : x));
+                                            if (!t.completed) showToast('Zadanie oznaczone jako ukończone ✅', 'success', 2000);
+                                        }}
+                                        onEdit={() => openEditForm(t)}
+                                        formatBadge={formatTaskBadge}
+                                        compact={compact}
+                                    />
+                                ))
+                            )}
+                        </div>
+                    )}
+                </div>
+            );
+
+            return (
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 pb-24">
+
+                    <ToastContainer toasts={toasts} removeToast={removeToast} />
+                    <ConfirmModal config={confirmConfig} onConfirm={handleConfirmOk} onCancel={handleConfirmCancel} />
+                    <CatModal />
+
+                    <header className="lg:col-span-12 bg-white dark:bg-zincDarkCard border border-zinc-200/50 dark:border-zinc-800/60 p-5 rounded-3xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 shadow-sm">
+                        <div>
+                            <h1 className="text-lg font-black tracking-tight text-zinc-800 dark:text-zinc-100">
+                                TaskApp
+                            </h1>
+                            <p className="text-xs text-zinc-500 dark:text-zinc-400 font-medium mt-0.5">
+                                {todayActiveCount > 0
+                                    ? `Masz dziś ${todayActiveCount} aktywn${todayActiveCount === 1 ? 'e' : 'ych'} zadani${todayActiveCount === 1 ? 'e' : ''}`
+                                    : 'Wszystkie zadania na dziś ukończone! ✨'}
+                            </p>
+                        </div>
+                        <div className="flex items-center gap-3 w-full sm:w-auto flex-wrap">
+                            <DailyProgress tasks={tasks} todayStr={TODAY} />
+                            <input
+                                type="text"
+                                placeholder="🔍 Szukaj zadania..."
+                                value={searchQuery}
+                                onChange={e => setSearchQuery(e.target.value)}
+                                className="px-4 py-2.5 text-xs border rounded-2xl bg-zinc-50 dark:bg-zincDarkInput border-zinc-200/50 dark:border-zinc-800 outline-none w-full sm:w-56 focus:bg-white dark:focus:bg-zincDarkCard transition-all"
+                            />
+                            <button onClick={() => setIsDarkMode(!isDarkMode)}
+                                className="p-2.5 bg-zinc-50 hover:bg-zinc-100 dark:bg-zincDarkInput dark:hover:bg-zinc-800 rounded-2xl text-sm transition flex-shrink-0">
+                                {isDarkMode ? '☀️' : '🌙'}
+                            </button>
+                        </div>
+                    </header>
+
+                    {currentView === 'tasks' && (
+                        <React.Fragment>
+                            <main className="grid grid-cols-1 gap-4 order-1 lg:col-span-8 view-enter">
+                                <div className="flex justify-between items-center px-1">
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-[10px] font-bold text-zinc-400 uppercase">Sortuj:</span>
+                                        <select value={sortBy} onChange={e => setSortBy(e.target.value)}
+                                            className="text-xs font-semibold bg-transparent border-none text-zinc-600 dark:text-zinc-400 outline-none cursor-pointer dark:bg-zincDarkBg">
+                                            <option value="date-asc">Termin: od najbliższego</option>
+                                            <option value="date-desc">Termin: od najdalszego</option>
+                                            <option value="priority">Priorytet: malejąco</option>
+                                        </select>
+                                    </div>
+                                    <button onClick={openAddForm}
+                                        className="hidden lg:flex items-center gap-1.5 px-4 py-2 bg-zinc-800 dark:bg-zinc-200 text-white dark:text-zinc-900 font-bold text-xs rounded-xl shadow-sm hover:bg-zinc-700 transition">
+                                        + Nowe zadanie
+                                    </button>
+                                </div>
+
+                                <SectionBlock
+                                    title="DZISIAJ"
+                                    items={dashboardSections.today}
+                                    expanded={sectionsExpanded.today}
+                                    onToggle={() => setSectionsExpanded(p => ({ ...p, today: !p.today }))}
+                                />
+                                <SectionBlock
+                                    title="NADCHODZĄCE"
+                                    items={dashboardSections.upcoming}
+                                    expanded={sectionsExpanded.upcoming}
+                                    onToggle={() => setSectionsExpanded(p => ({ ...p, upcoming: !p.upcoming }))}
+                                />
+                                <SectionBlock
+                                    title="UKOŃCZONE"
+                                    items={dashboardSections.completed}
+                                    expanded={sectionsExpanded.completed}
+                                    onToggle={() => setSectionsExpanded(p => ({ ...p, completed: !p.completed }))}
+                                    compact
+                                />
+                            </main>
+
+                            <CategoriesSidebar />
+
+                            <button onClick={openAddForm}
+                                className="lg:hidden fixed bottom-20 right-5 w-14 h-14 bg-zinc-800 text-white dark:bg-zinc-200 dark:text-zinc-900 rounded-full flex items-center justify-center text-3xl font-light shadow-xl z-40 hover:scale-105 transition-transform">
+                                +
+                            </button>
+                        </React.Fragment>
+                    )}
+
+                    {currentView === 'calendar' && (
+                        <main className="lg:col-span-12 bg-white dark:bg-zincDarkCard border border-zinc-200/40 dark:border-zinc-800/60 rounded-3xl shadow-sm overflow-hidden flex flex-col md:flex-row min-h-[500px] view-enter">
+                            <div className="p-6 flex-1 border-r border-zinc-100 dark:border-zinc-800/80">
+                                <div className="flex justify-between items-center mb-6">
+                                    <button onClick={() => shiftMonth(-1)}
+                                        className="px-4 py-2 bg-zinc-50 dark:bg-zincDarkInput text-xs font-bold rounded-xl hover:bg-zinc-100 dark:hover:bg-zinc-700 transition">
+                                        ◀ Poprzedni
+                                    </button>
+                                    <span className="font-extrabold text-xs text-zinc-700 dark:text-zinc-200 uppercase tracking-widest">
+                                        {calendarLabel}
+                                    </span>
+                                    <button onClick={() => shiftMonth(1)}
+                                        className="px-4 py-2 bg-zinc-50 dark:bg-zincDarkInput text-xs font-bold rounded-xl hover:bg-zinc-100 dark:hover:bg-zinc-700 transition">
+                                        Następny ▶
+                                    </button>
+                                </div>
+
+                                <div className="grid grid-cols-7 text-center text-[10px] font-bold text-zinc-400 mb-4 tracking-widest">
+                                    {['PN','WT','ŚR','CZ','PT','SB','ND'].map(d => <span key={d}>{d}</span>)}
+                                </div>
+
+                                <div className="grid grid-cols-7 gap-y-3 text-center">
+                                    {calendarMatrix.map((item, idx) => {
+                                        if (!item) return <div key={`e-${idx}`} />;
+                                        const isSelected  = item.dateString === selectedCalendarDate;
+                                        const isToday     = item.dateString === TODAY;
+                                        const hasTasks    = tasks.some(x => x.date1 === item.dateString);
+                                        const taskCount   = tasks.filter(x => x.date1 === item.dateString).length;
+                                        return (
+                                            <div key={item.dateString}
+                                                onClick={() => setSelectedCalendarDate(item.dateString)}
+                                                className={`py-2 mx-1 flex flex-col items-center justify-center relative rounded-2xl cursor-pointer text-xs font-bold transition-all
+                                                    ${isSelected ? 'bg-zinc-800 text-white dark:bg-zinc-200 dark:text-zinc-900 shadow-sm scale-105'
+                                                    : isToday    ? 'bg-zinc-100 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-100 ring-1 ring-zinc-300 dark:ring-zinc-600'
+                                                    :              'hover:bg-zinc-50 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-300'}`}
+                                            >
+                                                <span>{item.day}</span>
+                                                {hasTasks && (
+                                                    <span className={`text-[8px] font-black mt-0.5 ${isSelected ? 'text-white/70 dark:text-zinc-900/70' : 'text-zinc-400'}`}>
+                                                        {taskCount}
+                                                    </span>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+
+                            <div className="p-6 md:w-80 bg-zinc-50/30 dark:bg-zinc-900/10 flex flex-col">
+                                <div className="flex justify-between items-center mb-4">
+                                    <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider">Plan na dzień</h3>
+                                    <button onClick={() => { setSelectedCalendarDate(TODAY); setCurrentView('calendar'); }}
+                                        className="text-[10px] font-bold text-zinc-400 hover:text-zinc-600 bg-zinc-100 dark:bg-zinc-700 px-2 py-1 rounded-lg transition">
+                                        Dziś
+                                    </button>
+                                </div>
+                                <div className="space-y-3 flex-1 overflow-y-auto no-scrollbar">
+                                    {calendarDayTasks.length === 0 ? (
+                                        <div className="text-center py-16 opacity-40">
+                                            <div className="text-3xl mb-2">📭</div>
+                                            <p className="text-xs font-medium">Brak zadań na ten dzień</p>
+                                        </div>
+                                    ) : (
+                                        calendarDayTasks.map(t => (
+                                            <div key={t.id} onClick={() => openEditForm(t)}
+                                                className="p-4 bg-white dark:bg-zincDarkCard border border-zinc-100 dark:border-zinc-800 rounded-2xl shadow-sm cursor-pointer hover:border-zinc-300 dark:hover:border-zinc-600 transition-all">
+                                                <span className="block text-xs font-bold text-zinc-800 dark:text-zinc-200 truncate">{t.title}</span>
+                                                <div className="flex items-center gap-2 mt-1.5">
+                                                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-md
+                                                        ${t.priority === 'Wysoki' ? 'bg-rose-100 text-rose-600 dark:bg-rose-950/50 dark:text-rose-400'
+                                                        : t.priority === 'Średni'  ? 'bg-amber-100 text-amber-600 dark:bg-amber-950/50 dark:text-amber-400'
+                                                        :                            'bg-emerald-100 text-emerald-600 dark:bg-emerald-950/50 dark:text-emerald-400'}`}>
+                                                        {t.priority}
+                                                    </span>
+                                                    {t.time1 && <span className="text-[9px] text-zinc-400 font-bold">⏰ {t.time1}</span>}
+                                                    {t.completed && <span className="text-[9px] text-emerald-500 font-bold">✓ Ukończone</span>}
+                                                </div>
+                                            </div>
+                                        ))
+                                    )}
+                                </div>
+                                <button onClick={() => { setSelectedCalendarDate(selectedCalendarDate); openAddForm(); }}
+                                    className="mt-4 w-full py-2.5 text-xs font-bold bg-zinc-800 dark:bg-zinc-200 text-white dark:text-zinc-900 rounded-2xl hover:bg-zinc-700 transition">
+                                    + Dodaj na ten dzień
+                                </button>
+                            </div>
+                        </main>
+                    )}
+
+                    {currentView === 'form' && (
+                        <main className="lg:col-span-12 bg-white dark:bg-zincDarkCard border border-zinc-200/40 dark:border-zinc-800/60 rounded-3xl shadow-sm overflow-hidden flex flex-col view-enter">
+                            <div className="p-4 border-b dark:border-zinc-800/80 flex justify-between items-center bg-zinc-50/50 dark:bg-zinc-800/10">
+                                <button type="button" onClick={() => setCurrentView('tasks')}
+                                    className="text-xs font-bold text-zinc-500 bg-white dark:bg-zincDarkCard border dark:border-zinc-700 px-4 py-2 rounded-xl shadow-sm hover:bg-zinc-50 transition">
+                                    ‹ Wróć do listy
+                                </button>
+                                <h2 className="font-extrabold text-xs uppercase tracking-wider text-zinc-500 dark:text-zinc-300">
+                                    {formMode === 'add' ? '✨ Nowe zadanie' : '✏️ Edytuj zadanie'}
+                                </h2>
+                                {formMode === 'edit' ? (
+                                    <button type="button" onClick={handleDeleteTask}
+                                        className="text-xs font-bold text-rose-500 bg-rose-50 dark:bg-rose-950/20 border border-rose-200/50 dark:border-rose-800/30 px-4 py-2 rounded-xl hover:bg-rose-100 transition">
+                                        🗑️ Usuń
+                                    </button>
+                                ) : (
+                                    <div className="w-20" />
+                                )}
+                            </div>
+
+                            <form onSubmit={handleSaveForm} className="p-6 md:p-8 space-y-6">
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                                    <div className="md:col-span-3">
+                                        <label className="block text-[10px] font-extrabold text-zinc-400 uppercase tracking-wider mb-1">
+                                            Nazwa zadania *
+                                        </label>
+                                        <input type="text" value={inputTitle}
+                                            onChange={e => { setInputTitle(e.target.value); setValidationErr(''); }}
+                                            placeholder="Wpisz nazwę celu..."
+                                            className={`w-full px-4 py-3 border rounded-xl bg-zinc-50/30 dark:bg-zincDarkInput outline-none text-sm font-semibold transition-all
+                                                ${validationErr ? 'border-rose-400 dark:border-rose-600 bg-rose-50/30 dark:bg-rose-950/10 focus:border-rose-500'
+                                                                : 'border-zinc-200 dark:border-zinc-700 focus:border-zinc-500 focus:bg-white dark:focus:bg-zincDarkCard'}`}
+                                        />
+                                        {validationErr && (
+                                            <p className="text-rose-500 text-xs font-bold mt-1.5 flex items-center gap-1">
+                                                <span>⚠️</span> {validationErr}
+                                            </p>
+                                        )}
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-[10px] font-extrabold text-zinc-400 uppercase tracking-wider mb-1">Kategoria</label>
+                                        <select value={inputCategory} onChange={e => setInputCategory(e.target.value)}
+                                            className="w-full p-3 border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zincDarkInput rounded-xl text-sm font-medium outline-none">
+                                            {categories.filter(c => !c.immutable).map(c => (
+                                                <option key={c.id} value={c.id}>{c.icon} {c.name}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-[10px] font-extrabold text-zinc-400 uppercase tracking-wider mb-1">Priorytet</label>
+                                        <select value={inputPriority} onChange={e => setInputPriority(e.target.value)}
+                                            className="w-full p-3 border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zincDarkInput rounded-xl text-sm font-medium outline-none">
+                                            <option value="Niski">🟢 Niski</option>
+                                            <option value="Średni">🟡 Średni</option>
+                                            <option value="Wysoki">🔴 Wysoki</option>
+                                        </select>
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-[10px] font-extrabold text-zinc-400 uppercase tracking-wider mb-1">Ramy czasowe</label>
+                                        <select value={inputDateType} onChange={e => setInputDateType(e.target.value)}
+                                            className="w-full p-3 border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zincDarkInput rounded-xl text-sm font-medium outline-none">
+                                            <option value="single">📌 Punkt w czasie</option>
+                                            <option value="duration">⏳ Czas trwania (zakres)</option>
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <div className="p-4 bg-zinc-50 dark:bg-zincDarkBg border border-zinc-200/50 dark:border-zinc-800 rounded-2xl">
+                                    {inputDateType === 'single' ? (
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                            <div>
+                                                <label className="block text-[10px] font-bold text-zinc-400 uppercase mb-1">Data realizacji</label>
+                                                <input type="date" value={inputDate1} onChange={e => setInputDate1(e.target.value)}
+                                                    className="w-full p-2.5 border border-zinc-200 dark:border-zinc-700 rounded-xl text-xs bg-white dark:bg-zincDarkInput outline-none" />
+                                            </div>
+                                            <div>
+                                                <label className="block text-[10px] font-bold text-zinc-400 uppercase mb-1">Godzina (opcjonalna)</label>
+                                                <input type="time" value={inputTime1} onChange={e => setInputTime1(e.target.value)}
+                                                    className="w-full p-2.5 border border-zinc-200 dark:border-zinc-700 rounded-xl text-xs bg-white dark:bg-zincDarkInput outline-none" />
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                            <div className="space-y-2">
+                                                <span className="block text-[10px] font-bold text-zinc-500 uppercase">▶ Rozpoczęcie</span>
+                                                <input type="date" value={inputDate1} onChange={e => { setInputDate1(e.target.value); setValidationErr(''); }}
+                                                    className="w-full p-2.5 border border-zinc-200 dark:border-zinc-700 rounded-xl text-xs bg-white dark:bg-zincDarkInput outline-none" />
+                                                <input type="time" value={inputTime1} onChange={e => setInputTime1(e.target.value)}
+                                                    className="w-full p-2.5 border border-zinc-200 dark:border-zinc-700 rounded-xl text-xs bg-white dark:bg-zincDarkInput outline-none" />
+                                            </div>
+                                            <div className="space-y-2 border-t md:border-t-0 md:border-l border-zinc-200 dark:border-zinc-700 md:pl-4 pt-3 md:pt-0">
+                                                <span className="block text-[10px] font-bold text-zinc-400 uppercase">■ Zakończenie</span>
+                                                <input type="date" value={inputDate2} onChange={e => { setInputDate2(e.target.value); setValidationErr(''); }}
+                                                    className="w-full p-2.5 border border-zinc-200 dark:border-zinc-700 rounded-xl text-xs bg-white dark:bg-zincDarkInput outline-none" />
+                                                <input type="time" value={inputTime2} onChange={e => setInputTime2(e.target.value)}
+                                                    className="w-full p-2.5 border border-zinc-200 dark:border-zinc-700 rounded-xl text-xs bg-white dark:bg-zincDarkInput outline-none" />
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+
+                                <div>
+                                    <label className="block text-[10px] font-extrabold text-zinc-400 uppercase tracking-wider mb-1">Notatki i szczegóły</label>
+                                    <textarea value={inputNotes} onChange={e => setInputNotes(e.target.value)}
+                                        placeholder="Wpisz tutaj dodatkowe opisy, linki, notatki..."
+                                        className="w-full min-h-[130px] p-4 border border-zinc-200 dark:border-zinc-700 bg-zinc-50/20 dark:bg-zincDarkInput/50 rounded-2xl resize-none outline-none text-sm text-zinc-800 dark:text-zinc-200 focus:border-zinc-500 focus:bg-white dark:focus:bg-zincDarkCard transition-all"
+                                    />
+                                    <p className="text-[10px] text-zinc-400 mt-1 text-right">{inputNotes.length} znaków</p>
+                                </div>
+
+                                <button type="submit"
+                                    className="w-full py-4 bg-zinc-800 dark:bg-zinc-200 text-white dark:text-zinc-900 rounded-2xl text-xs font-extrabold tracking-widest uppercase shadow-md hover:bg-zinc-700 dark:hover:bg-zinc-300 transition-all">
+                                    {formMode === 'add' ? '✨ Dodaj zadanie' : '💾 Zapisz zmiany'}
+                                </button>
+                            </form>
+                        </main>
+                    )}
+
+                    {currentView === 'settings' && (
+                        <SettingsView
+                            isDarkMode={isDarkMode}
+                            setIsDarkMode={setIsDarkMode}
+                            tasks={tasks}
+                            setTasks={setTasks}
+                            categories={categories}
+                            setCategories={setCategories}
+                            showToast={showToast}
+                            showConfirm={showConfirm}
+                        />
+                    )}
+
+                    <nav className="fixed bottom-0 left-0 right-0 h-16 bg-white dark:bg-zincDarkCard border-t border-zinc-200/50 dark:border-zinc-800 flex items-center justify-around px-6 z-50 shadow-lg">
+                        {[
+                            { view: 'tasks',    icon: '📋', label: 'Zadania'    },
+                            { view: 'calendar', icon: '📅', label: 'Kalendarz'  },
+                            { view: 'settings', icon: '⚙️', label: 'Ustawienia' },
+                        ].map(({ view, icon, label }) => (
+                            <button key={view}
+                                onClick={() => setCurrentView(view)}
+                                className={`flex flex-col items-center justify-center gap-1 transition-all px-4 py-1 rounded-xl
+                                    ${currentView === view
+                                        ? 'text-zinc-900 dark:text-zinc-100 scale-105 font-bold bg-zinc-100 dark:bg-zinc-800'
+                                        : 'text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200'}`}>
+                                <span className="text-lg">{icon}</span>
+                                <span className="text-[10px] tracking-tight font-bold">{label}</span>
+                            </button>
+                        ))}
+                    </nav>
+
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<TaskApp />);
+    </script>
+</body>
+</html>
